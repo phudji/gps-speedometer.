@@ -1,0 +1,160 @@
+name: Build firmware
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Cai ESP32 va thu vien
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install TinyGPSPlus "Adafruit SSD1306" "Adafruit GFX Library" "Adafruit BusIO"
+      - name: Tao file
+        run: |
+          mkdir -p gps_speedometer site
+          cat > gps_speedometer/gps_speedometer.ino <<'EOF'
+          // Dong ho do toc do GPS: ESP32-S3 + OLED 0.96" (SSD1306) + GPS NEO-6M
+          // Thu vien can cai: TinyGPSPlus, Adafruit SSD1306, Adafruit GFX
+          #include <Wire.h>
+          #include <Adafruit_GFX.h>
+          #include <Adafruit_SSD1306.h>
+          #include <TinyGPS++.h>
+
+          #define OLED_SDA 4
+          #define OLED_SCL 5
+          #define GPS_RX 10  // noi voi chan TX cua NEO-6M
+          #define GPS_TX 11  // noi voi chan RX cua NEO-6M
+
+          Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+          TinyGPSPlus gps;
+          unsigned long lastDraw = 0;
+
+          void setup() {
+            Wire.begin(OLED_SDA, OLED_SCL);
+            oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+            oled.setTextColor(SSD1306_WHITE);
+            Serial1.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+          }
+
+          void loop() {
+            while (Serial1.available()) gps.encode(Serial1.read());
+            if (millis() - lastDraw < 500) return;
+            lastDraw = millis();
+
+            oled.clearDisplay();
+            if (gps.location.isValid() && gps.location.age() < 3000) {
+              float kmh = gps.speed.kmph();
+              if (kmh < 2) kmh = 0;  // loc nhieu khi dung yen
+              oled.setTextSize(4);
+              oled.setCursor(0, 10);
+              oled.print((int)(kmh + 0.5));
+              oled.setTextSize(2);
+              oled.setCursor(80, 18);
+              oled.print("km/h");
+            } else {
+              oled.setTextSize(2);
+              oled.setCursor(0, 8);
+              oled.print("Dang tim");
+              oled.setCursor(0, 30);
+              oled.print("ve tinh...");
+            }
+            oled.setTextSize(1);
+            oled.setCursor(0, 56);
+            oled.printf("Ve tinh: %d", gps.satellites.value());
+            oled.display();
+          }
+          EOF
+          cat > site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html lang="vi">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Nạp code đồng hồ đo tốc độ GPS</title>
+          <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+          <style>
+          :root{--bg:#f5f7fa;--card:#fff;--ink:#14202b;--mute:#566574;--accent:#0b7a75;--line:#d7dee6;color-scheme:light dark}
+          @media (prefers-color-scheme:dark){:root{--bg:#0e1419;--card:#16202a;--ink:#e6eef5;--mute:#98a8b6;--accent:#4fd1c5;--line:#263543}}
+          body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+          main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
+          h1{font-size:26px;line-height:1.3;margin:0 0 8px}
+          h2{font-size:18px;margin:28px 0 10px}
+          .mute{color:var(--mute)}
+          .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+          button.go{font:inherit;font-weight:600;background:var(--accent);color:var(--bg);border:0;border-radius:12px;padding:12px 20px;cursor:pointer}
+          table{width:100%;border-collapse:collapse;font-size:15px}
+          th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+          th{color:var(--accent)}
+          ol{padding-left:20px;margin:0}
+          </style>
+          </head>
+          <body>
+          <main>
+            <h1>🛰️ Đồng hồ đo tốc độ GPS</h1>
+            <p class="mute">Nạp code trực tiếp từ trình duyệt vào board ESP32-S3 của bạn, không cần cài phần mềm.</p>
+
+            <div class="card">
+              <p style="margin-top:0">Cắm board vào máy tính bằng cáp USB, rồi bấm nút bên dưới và chọn cổng của board.</p>
+              <esp-web-install-button manifest="manifest.json">
+                <button slot="activate" class="go">Nạp code vào ESP32-S3</button>
+                <span slot="unsupported">Trình duyệt này không hỗ trợ. Hãy mở trang bằng Chrome hoặc Edge trên máy tính.</span>
+                <span slot="not-allowed">Trang cần chạy bằng HTTPS mới nạp được.</span>
+              </esp-web-install-button>
+            </div>
+
+            <h2>Cách đấu dây</h2>
+            <div class="card" style="overflow-x:auto">
+              <table>
+                <tr><th>OLED 0.96"</th><th>ESP32-S3</th></tr>
+                <tr><td>VCC</td><td>3V3</td></tr>
+                <tr><td>GND</td><td>GND</td></tr>
+                <tr><td>SDA</td><td>GPIO 4</td></tr>
+                <tr><td>SCL</td><td>GPIO 5</td></tr>
+              </table>
+              <br>
+              <table>
+                <tr><th>GPS NEO-6M</th><th>ESP32-S3</th></tr>
+                <tr><td>VCC</td><td>3V3 (hoặc 5V nếu module ghi 5V)</td></tr>
+                <tr><td>GND</td><td>GND</td></tr>
+                <tr><td>TX</td><td>GPIO 10</td></tr>
+                <tr><td>RX</td><td>GPIO 11</td></tr>
+              </table>
+            </div>
+
+            <h2>Lưu ý</h2>
+            <ol class="mute">
+              <li>Đóng Arduino IDE hoặc Serial Monitor đang giữ cổng COM trước khi nạp.</li>
+              <li>Nếu máy không thấy cổng, giữ nút BOOT, bấm RESET một lần rồi thả BOOT.</li>
+              <li>Lần đầu GPS cần ra chỗ thoáng trời vài phút mới bắt được vệ tinh.</li>
+            </ol>
+          </main>
+          </body>
+          </html>
+          EOF
+          cat > site/manifest.json <<'EOF'
+          {
+            "name": "Đồng hồ đo tốc độ GPS",
+            "version": "1.0",
+            "new_install_prompt_erase": true,
+            "builds": [
+              {
+                "chipFamily": "ESP32-S3",
+                "parts": [{ "path": "firmware.bin", "offset": 0 }]
+              }
+            ]
+          }
+          EOF
+      - name: Bien dich
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir out gps_speedometer
+          ls out
+          cp out/gps_speedometer.ino.merged.bin site/firmware.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: site
